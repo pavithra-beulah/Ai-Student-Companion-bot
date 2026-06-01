@@ -1,0 +1,146 @@
+{% extends 'base.html' %}
+{% block title %}Teacher Portal — Classroom Companion{% endblock %}
+{% block content %}
+
+<div class="page-header">
+    <div class="page-header-icon icon-teacher">📋</div>
+    <div>
+        <h2>Classroom Overview</h2>
+        <p>Monitor assignments, track status & push feedback to students</p>
+    </div>
+</div>
+
+<div class="table-card">
+    <div class="table-responsive">
+        <table class="cc-table" id="assignments-table">
+            <thead>
+                <tr>
+                    <th>Student</th>
+                    <th>Assigned Task</th>
+                    <th>Deadline</th>
+                    <th>Status</th>
+                    <th>Submission</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in assignments %}
+                <tr>
+                    <td>
+                        <div class="student-chip">
+                            <div class="student-avatar">
+                                {{ row.student_name[0].upper() if row.student_name else '?' }}
+                            </div>
+                            <span>{{ row.student_name }}</span>
+                        </div>
+                    </td>
+                    <td style="max-width:220px; color: var(--text);">{{ row.task_description }}</td>
+                    <td><span class="status-badge badge-secondary">⏱ {{ row.deadline }}</span></td>
+                    <td>
+                        {% if row.status == 'Stuck' %}
+                        <span class="status-badge badge-stuck">⚠ Stuck</span>
+                        {% elif row.status == 'In Progress' %}
+                        <span class="status-badge badge-progress">⚡ In Progress</span>
+                        {% elif row.status == 'Completed' %}
+                        <span class="status-badge badge-completed">✓ Completed</span>
+                        {% else %}
+                        <span class="status-badge badge-default">{{ row.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td class="submission-text-cell">
+                        {% if row.submission_text %}<p>{{ row.submission_text }}</p>{% endif %}
+                        {% if row.file_path %}
+                        <a href="/{{ row.file_path }}" target="_blank" class="btn-view-file">🖼 View File</a>
+                        {% endif %}
+                        {% if not row.submission_text and not row.file_path %}
+                        <span class="no-submission">No submission yet</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <button class="btn-feedback" id="feedback-btn-{{ row.id }}" type="button"
+                            onclick="openFeedbackModal('{{ row.id }}', '{{ row.feedback_text or '' }}')">
+                            ✏ Feedback
+                        </button>
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6">
+                        <div class="empty-state">
+                            <div class="empty-state-icon">📭</div>
+                            <p>No assignments found for your class yet.</p>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div id="feedbackModal" style="display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background-color: rgba(26, 29, 58, 0.5); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); z-index: 99999; align-items: center; justify-content: center;">
+    <div style="background: #ffffff; padding: 28px; border-radius: 20px; max-width: 480px; width: 100%; box-shadow: var(--shadow-lg); margin: 20px; box-sizing: border-box; border: 1px solid rgba(99,102,241,0.15);">
+        
+        <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 14px; border-bottom: 1px solid rgba(99,102,241,0.1); margin-bottom: 18px;">
+            <h5 style="margin: 0; font-size: 1.15rem; font-weight: 800; color: #1a1d3a; font-family: var(--font);">✏ Write Feedback</h5>
+            <button type="button" onclick="closeFeedbackModal()" style="background: none; border: none; font-size: 1.5rem; cursor: pointer; color: var(--muted); line-height: 1; padding: 0;">&times;</button>
+        </div>
+        
+        <form action="/submit-feedback" method="POST" style="margin: 0; pointer-events: auto;">
+            <input type="hidden" name="assignment_id" id="modal_assignment_id">
+            
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px;">
+                <label for="modal_feedback_text" style="font-size: 0.72rem; font-weight: 700; color: var(--text-sec); letter-spacing: 0.06em; text-transform: uppercase;">Feedback Notes</label>
+                <textarea 
+                    name="feedback" 
+                    id="modal_feedback_text"
+                    rows="4" 
+                    placeholder="Great explanation of the concepts..." 
+                    style="width: 100%; background: #f7f8ff; border: 1.5px solid rgba(99,102,241,0.12); border-radius: 10px; color: #1a1d3a; font-size: 0.9rem; padding: 12px 15px; resize: vertical; min-height: 120px; outline: none; font-family: var(--font); line-height: 1.6; pointer-events: auto;"></textarea>
+            </div>
+            
+            <div style="display: flex; justify-content: flex-end; gap: 12px; border-top: 1px solid rgba(99,102,241,0.1); padding-top: 16px;">
+                <button type="button" onclick="closeFeedbackModal()" class="btn-modal-close" style="margin:0;">Cancel</button>
+                <button type="submit" class="btn-modal-submit" id="submit-feedback-btn" style="margin:0;">Submit &amp; Push DM →</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    function openFeedbackModal(assignmentId, existingFeedback) {
+        const modal = document.getElementById('feedbackModal');
+        const inputId = document.getElementById('modal_assignment_id');
+        const txtArea = document.getElementById('modal_feedback_text');
+
+        if (modal && inputId && txtArea) {
+            inputId.value = assignmentId;
+            txtArea.value = existingFeedback;
+
+            // Enforce Flex centering cleanly across target rows
+            modal.style.display = 'flex';
+
+            // Pin user input lane autofocus path 
+            setTimeout(() => {
+                txtArea.removeAttribute('disabled');
+                txtArea.removeAttribute('readonly');
+                txtArea.focus();
+            }, 60);
+        }
+    }
+
+    function closeFeedbackModal() {
+        const modal = document.getElementById('feedbackModal');
+        if (modal) {
+            modal.style.display = 'none';
+        }
+    }
+
+    window.onclick = function (event) {
+        const modal = document.getElementById('feedbackModal');
+        if (event.target === modal) {
+            modal.style.display = 'none';
+        }
+    }
+</script>
+{% endblock %}

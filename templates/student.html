@@ -1,0 +1,67 @@
+{% extends 'base.html' %}
+{% block title %}Student Tracker — Classroom Companion{% endblock %}
+{% block content %}
+
+<div class="page-header">
+    <div class="page-header-icon icon-student">🎒</div>
+    <div>
+        <h2>My Assignments</h2>
+        <p>Track your tasks, deadlines &amp; teacher feedback</p>
+    </div>
+</div>
+
+<div class="identity-banner">
+    <div class="identity-avatar">👤</div>
+    <div>
+        <div class="identity-label">Logged in as</div>
+        <div class="identity-name">{{ student.name if student else username }}</div>
+    </div>
+</div>
+
+<div class="row g-3" id="assignments-grid">
+    {% for row in assignments %}
+    <div class="col-md-6 col-xl-4">
+        <div class="assignment-card
+            {% if row.status == 'Completed' %}status-completed
+            {% elif row.status == 'Stuck' %}status-stuck
+            {% elif row.status == 'In Progress' %}status-progress
+            {% else %}status-default{% endif %}">
+
+            <div class="card-gradient-header"></div>
+            <div class="card-body-inner">
+                <div class="d-flex justify-content-between align-items-center gap-2 mb-1">
+                    <h5 class="card-task-title">{{ row.task_description }}</h5>
+                    {% if row.status == 'Completed' %}
+                        <span class="status-badge badge-completed flex-shrink-0">✓ Done</span>
+                    {% elif row.status == 'Stuck' %}
+                        <span class="status-badge badge-stuck flex-shrink-0">⚠ Stuck</span>
+                    {% elif row.status == 'In Progress' %}
+                        <span class="status-badge badge-progress flex-shrink-0">⚡ Active</span>
+                    {% else %}
+                        <span class="status-badge badge-default flex-shrink-0">{{ row.status }}</span>
+                    {% endif %}
+                </div>
+
+                <div class="deadline-pill">⏳ {{ row.deadline }}</div>
+
+                <div class="feedback-box">
+                    <div class="feedback-label">💌 Teacher Feedback</div>
+                    {% if row.feedback_text %}
+                        <p class="feedback-text">"{{ row.feedback_text }}"</p>
+                    {% else %}
+                        <p class="feedback-empty">No review submitted yet.</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="col-12">
+        <div class="empty-state">
+            <div class="empty-state-icon">📭</div>
+            <p>No assignments have been assigned to you yet.</p>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
