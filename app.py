@@ -1,4 +1,7 @@
+# app.py
 import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from flask import Flask, render_template, request, redirect, session, url_for
 from database import get_db_connection
 from dotenv import load_dotenv
@@ -6,20 +9,16 @@ import threading
 import time
 
 from reminders import send_proactive_escalations
-import bot as telegram_bot  # your bot.py module
+import bot as telegram_bot  
 
-# ---------------- ENV ----------------
 load_dotenv(override=True)
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "sim_interview_secret_key_2026")
 
-# ---------------- ROUTES ----------------
-
 @app.route('/')
 def index():
     return redirect(url_for('login_page'))
-
 
 @app.route('/login', methods=['GET', 'POST'])
 def login_page():
@@ -30,10 +29,13 @@ def login_page():
         password = request.form.get('password').strip()
 
         conn = get_db_connection()
-        user = conn.execute(
-            'SELECT * FROM users WHERE username = ? AND password = ?',
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(
+            'SELECT * FROM users WHERE username = %s AND password = %s',
             (username, password)
-        ).fetchone()
+        )
+        user = cursor.fetchone()
+        cursor.close()
         conn.close()
 
         if user:
@@ -50,14 +52,10 @@ def login_page():
 
     return render_template('login.html', error=error)
 
-
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('login_page'))
-
-
-# ---------------- TEACHER DASHBOARD ----------------
 
 @app.route('/teacher/dashboard')
 def teacher_dashboard():
@@ -65,15 +63,18 @@ def teacher_dashboard():
         return redirect(url_for('login_page'))
 
     conn = get_db_connection()
-    assignments = conn.execute('''
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute('''
         SELECT a.id, u.username as student_name, a.task_description,
                a.deadline, a.status, a.last_reminder_sent,
                s.submission_text, s.feedback_text
         FROM assignments a
         JOIN users u ON a.student_id = u.id
         LEFT JOIN submissions s ON a.id = s.assignment_id
-        WHERE a.teacher_id = ?
-    ''', (session['user_id'],)).fetchall()
+        WHERE a.teacher_id = %s
+    ''', (session['user_id'],))
+    assignments = cursor.fetchall()
+    cursor.close()
     conn.close()
 
     return render_template(
@@ -82,23 +83,23 @@ def teacher_dashboard():
         username=session['username']
     )
 
-
-# ---------------- STUDENT DASHBOARD ----------------
-
 @app.route('/student/dashboard')
 def student_dashboard():
     if 'user_id' not in session or session['role'] != 'student':
         return redirect(url_for('login_page'))
 
     conn = get_db_connection()
-    assignments = conn.execute('''
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute('''
         SELECT a.id, a.task_description, a.deadline,
                a.status, a.last_reminder_sent,
                s.feedback_text
         FROM assignments a
         LEFT JOIN submissions s ON a.id = s.assignment_id
-        WHERE a.student_id = ?
-    ''', (session['user_id'],)).fetchall()
+        WHERE a.student_id = %s
+    ''', (session['user_id'],))
+    assignments = cursor.fetchall()
+    cursor.close()
     conn.close()
 
     return render_template(
@@ -106,9 +107,6 @@ def student_dashboard():
         assignments=assignments,
         username=session['username']
     )
-
-
-# ---------------- FEEDBACK ----------------
 
 @app.route('/submit-feedback', methods=['POST'])
 def submit_feedback():
@@ -119,25 +117,27 @@ def submit_feedback():
     feedback_text = request.form.get('feedback')
 
     conn = get_db_connection()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-    conn.execute('''
+    cursor.execute('''
         INSERT INTO submissions (assignment_id, feedback_text)
-        VALUES (?, ?)
+        VALUES (%s, %s)
         ON CONFLICT(assignment_id)
-        DO UPDATE SET feedback_text = excluded.feedback_text
+        DO UPDATE SET feedback_text = EXCLUDED.feedback_text
     ''', (assignment_id, feedback_text))
 
-    assignment = conn.execute('''
+    cursor.execute('''
         SELECT a.task_description, u.telegram_chat_id
         FROM assignments a
         JOIN users u ON a.student_id = u.id
-        WHERE a.id = ?
-    ''', (assignment_id,)).fetchone()
+        WHERE a.id = %s
+    ''', (assignment_id,))
+    assignment = cursor.fetchone()
 
     conn.commit()
+    cursor.close()
     conn.close()
 
-    # ---------------- TELEGRAM NOTIFICATION ----------------
     if assignment and assignment['telegram_chat_id']:
         try:
             telegram_bot.bot.send_message(
@@ -151,13 +151,9 @@ def submit_feedback():
 
     return redirect(url_for('teacher_dashboard'))
 
-
-# ---------------- BACKGROUND THREADS ----------------
-
 def run_bot():
     print("🤖 Telegram bot started...")
     telegram_bot.bot.infinity_polling()
-
 
 def run_reminders():
     print("⏰ Reminder system started...")
@@ -168,12 +164,11 @@ def run_reminders():
             print(f"Reminder error: {e}")
         time.sleep(30)
 
-
-# ---------------- MAIN ----------------
-
 if __name__ == "__main__":
     threading.Thread(target=run_bot, daemon=True).start()
     threading.Thread(target=run_reminders, daemon=True).start()
 
-    print("🚀 Flask app running...")
-    app.run(host="0.0.0.0", port=5000)
+    # CRITICAL RENDER FIX: Dynamically intercept system web container port binding variable
+    bind_port = int(os.getenv("PORT", 5000))
+    print(f"🚀 Flask app running on port {bind_port}...")
+    app.run(host="0.0.0.0", port=bind_port)
