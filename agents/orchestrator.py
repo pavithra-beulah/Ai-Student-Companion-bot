@@ -5,7 +5,7 @@ from agents.llm_client import LLMClient
 
 class AgentOrchestrator:
     def __init__(self):
-        # Wraps the model call cleanly so providers can be swapped live [cite: 69]
+        # Wraps the model call cleanly so providers can be swapped live
         self.client = LLMClient()
 
     def route_intent(self, text: str, role: str) -> str:
@@ -24,6 +24,10 @@ class AgentOrchestrator:
             Respond with ONLY the category string.
             """
             res = self.client.generate_text(prompt)
+            
+            # System logging check for debugging live incoming traffic on Render
+            print(f"📡 Raw LLM Route Engine response text: {res}")
+            
             if "ASSIGNMENT" in res: return "ASSIGNMENT"
             if "QUERY" in res: return "QUERY"
             return "OTHER"
@@ -48,16 +52,24 @@ class AgentOrchestrator:
         }}
         """
         raw_res = self.client.generate_text(prompt)
-        cleaned = re.sub(r"```json|```", "", raw_res).strip()
+        
+        # FIX: Safely isolate only the core JSON brackets {} to prevent parser crashes
         try:
-            return json.loads(cleaned)
-        except:
+            match = re.search(r"\{.*\}", raw_res, re.DOTALL)
+            if match:
+                cleaned = match.group(0).strip()
+                return json.loads(cleaned)
+            else:
+                cleaned = re.sub(r"```json|```", "", raw_res).strip()
+                return json.loads(cleaned)
+        except Exception as parse_err:
+            print(f"⚠️ JSON extraction parsing fallback caught: {parse_err}")
             return {"student_name": None, "task": text, "deadline": "Not specified"}
 
     def student_agent_classify(self, text: str) -> str:
         """
         3. STUDENT AGENT
-        Interprets natural language student updates and converts them into system statuses[cite: 39, 45].
+        Interprets natural language student updates and converts them into system statuses.
         """
         prompt = f"""
         You are the Student Agent. Interpret this progress update message from a student:
@@ -108,7 +120,7 @@ class AgentOrchestrator:
     def summarizer_agent_single(self, student_username: str, query_text: str, assignments_list) -> str:
         """
         5. SUMMARIZER AGENT (Single Student Analytics)
-        Fulfills contextual performance summary queries regarding specific students[cite: 47, 62].
+        Fulfills contextual performance summary queries regarding specific students.
         """
         if not assignments_list:
             return f"📋 <b>No historical tracking data found for student @{student_username}.</b>"
@@ -118,7 +130,7 @@ class AgentOrchestrator:
             formatted_history += f"- Task: {a['task_description']} | Status: {a['status']} | Deadline: {a['deadline']}\n"
             
         prompt = f"""
-        You are the Summariser Agent. Provide a friendly status evaluation response answering this teacher query[cite: 62]: "{query_text}"
+        You are the Summariser Agent. Provide a friendly status evaluation response answering this teacher query: "{query_text}"
         
         Here is the historical performance log for student '{student_username}':
         {formatted_history}
@@ -129,6 +141,6 @@ class AgentOrchestrator:
         - Use <code>text</code> for exact status metrics (e.g., <code>In Progress</code>, <code>Stuck</code>).
         - Keep lines spaced neatly using standard newlines (\\n).
         
-        Write an assessment answering the teacher's query[cite: 62]. Evaluate if they are on track, call out specific statuses explicitly, and provide 1-2 points on how the teacher can assist them.
+        Write an assessment answering the teacher's query. Evaluate if they are on track, call out specific statuses explicitly, and provide 1-2 points on how the teacher can assist them.
         """
         return self.client.generate_text(prompt)
