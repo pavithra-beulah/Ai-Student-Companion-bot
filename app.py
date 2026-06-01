@@ -151,8 +151,10 @@ def submit_feedback():
 
     return redirect(url_for('teacher_dashboard'))
 
+# ... (Keep all your routes like index, login, teacher_dashboard, student_dashboard, etc.)
+
 def run_bot():
-    print("🤖 Telegram bot started...")
+    print("🤖 Telegram bot polling thread started...")
     try:
         telegram_bot.bot.polling(none_stop=True, interval=0, timeout=20)
     except Exception as e:
@@ -167,33 +169,17 @@ def run_reminders():
             print(f"Reminder error: {e}")
         time.sleep(30)
 
-# Global flag to ensure workers are initialized only once across requests
-workers_initialized = False
-
-@app.before_request
-def initialize_background_workers():
-    global workers_initialized
-    if not workers_initialized:
-        # Avoid running initialization inside auxiliary testing sub-processes
-        if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
-            
-            # 1. Clear and configure database tables fresh on Render boot
-            print("♻️ Re-initializing database tables...")
-            try:
-                init_db()
-                print("✅ Postgres Database cleanly initialized on Render.")
-            except Exception as db_err:
-                print(f"❌ Database initialization failed: {db_err}")
-
-            # 2. Safely thread background services out of Gunicorn's request lifecycle
-            print("Initializing background workers for production...")
-            threading.Thread(target=run_bot, daemon=True).start()
-            threading.Thread(target=run_reminders, daemon=True).start()
-            
-            workers_initialized = True
+# All background initialization logic has been moved to gunicorn.conf.py 
+# to guarantee absolute single-instance execution on production forks.
 
 if __name__ == "__main__":
     # Local fallback option when executing 'python app.py' manually
+    from database import init_db
+    try:
+        init_db()
+    except:
+        pass
+    
     bind_port = int(os.getenv("PORT", 5000))
     print(f"🚀 Flask app running locally on port {bind_port}...")
     app.run(host="0.0.0.0", port=bind_port)
