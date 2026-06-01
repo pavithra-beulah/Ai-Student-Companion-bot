@@ -151,10 +151,12 @@ def submit_feedback():
 
     return redirect(url_for('teacher_dashboard'))
 
+# ... (your existing routes like index, login_page, etc.)
+
 def run_bot():
     print("🤖 Telegram bot started...")
-    # Change infinity_polling() to regular polling with non_stop handling
     try:
+        # Use regular polling with non-stop handling for thread safety
         telegram_bot.bot.polling(none_stop=True, interval=0, timeout=20)
     except Exception as e:
         print(f"Bot polling crashed: {e}")
@@ -168,17 +170,13 @@ def run_reminders():
             print(f"Reminder error: {e}")
         time.sleep(30)
 
-if __name__ == "__main__":
-    # 1. Intercept the port right away
-    bind_port = int(os.getenv("PORT", 5000))
-    print(f"🚀 Flask app preparing on port {bind_port}...")
-    
-    # 2. Start your threads with a slight structural breathing room
-    bot_thread = threading.Thread(target=run_bot, daemon=True)
-    reminder_thread = threading.Thread(target=run_reminders, daemon=True)
-    
-    bot_thread.start()
-    reminder_thread.start()
+# FIX FOR GUNICORN: Spawning background threads during module loading context
+print("Initializing background workers for production...")
+threading.Thread(target=run_bot, daemon=True).start()
+threading.Thread(target=run_reminders, daemon=True).start()
 
-    # 3. Hand over control to Flask
+if __name__ == "__main__":
+    # This block only runs during local development testing via 'python app.py'
+    bind_port = int(os.getenv("PORT", 5000))
+    print(f"🚀 Flask app running locally on port {bind_port}...")
     app.run(host="0.0.0.0", port=bind_port)
