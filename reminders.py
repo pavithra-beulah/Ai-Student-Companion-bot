@@ -1,6 +1,7 @@
 # reminders.py
 import os
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import telebot
 import time
 from datetime import datetime
@@ -8,6 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+DB_URL = os.getenv("DATABASE_URL")
 bot = telebot.TeleBot(BOT_TOKEN) if BOT_TOKEN else None
 
 def parse_days_left(deadline_str):
@@ -18,26 +20,24 @@ def parse_days_left(deadline_str):
         return 2
 
 def send_proactive_escalations():
-    if not bot:
-        print("Bot token unavailable.")
+    if not bot or not DB_URL:
+        print("Bot token or DB link unavailable.")
         return
         
-    conn = sqlite3.connect("classroom.db")
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    conn = psycopg2.connect(DB_URL)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     
-    # Select non-completed assignments using valid schema columns
-    pending = cursor.execute('''
+    cursor.execute('''
         SELECT a.id as assignment_id, a.task_description, a.deadline, a.status, a.last_reminder_sent, u.telegram_chat_id, u.username
         FROM assignments a
         JOIN users u ON a.student_id = u.id
         WHERE a.status NOT IN ('Completed')
-    ''').fetchall()
+    ''')
+    pending = cursor.fetchall()
     
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     for row in pending:
-        # Avoid spamming multiple reminders on the exact same calendar date
         if row['last_reminder_sent'] == today_str:
             continue
             
@@ -45,11 +45,10 @@ def send_proactive_escalations():
         status = row['status']
         task = row['task_description']
         deadline = row['deadline']
-        student_display_name = row['username']  # Using strictly username to match your DB schema
+        student_display_name = row['username']
         
         days_left = parse_days_left(deadline)
         
-        # Craft smart, context-aware HTML notification payloads (Safe from underscore crashes)
         if status == 'Stuck':
             msg = f"🚨 <b>Urgent Blockage Alert, {student_display_name}!</b>\n\nYou flagged your assignment <i>'{task}'</i> as <b>Stuck</b>. Let's get you past this blocker! Reply directly to this message with what's holding you back."
         elif days_left <= 1 or "tomorrow" in deadline.lower():
@@ -59,12 +58,9 @@ def send_proactive_escalations():
 
         if chat_id:
             try:
-                # Switched to HTML parsing to support usernames with underscores safely
                 bot.send_message(chat_id, msg, parse_mode="HTML")
-                
-                # Update persistence variables state context to avoid notification loop spamming
                 cursor.execute(
-                    "UPDATE assignments SET last_reminder_sent = ? WHERE id = ?", 
+                    "UPDATE assignments SET last_reminder_sent = %s WHERE id = %s", 
                     (today_str, row['assignment_id'])
                 )
                 conn.commit()
@@ -72,10 +68,10 @@ def send_proactive_escalations():
             except Exception as e:
                 print(f"Could not reach chat profile {chat_id}: {e}")
                 
+    cursor.close()
     conn.close()
 
 if __name__ == '__main__':
-    # Checking database state intervals periodically
     CHECK_INTERVAL_SECONDS = 30 
     print(f"🚀 Proactive Reminder Daemon running background checks every {CHECK_INTERVAL_SECONDS}s...")
     while True:
