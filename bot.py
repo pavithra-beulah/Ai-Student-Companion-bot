@@ -1,33 +1,27 @@
 # bot.py
 import os
 import re
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import telebot
 import requests
 from dotenv import load_dotenv
 from database import get_db_connection
 from agents.orchestrator import AgentOrchestrator
 
-# Explicitly load environment variables
 load_dotenv(override=True)
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 print(f"Loading Bot Token: {'Found' if BOT_TOKEN else 'NOT FOUND'}")
 
-# Ensure local folder exists to save uploaded homework file assets
 DOWNLOAD_DIR = "static/uploads"
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
 
-# Force explicit TeleBot constructor configuration to handle single-threaded workflows
 bot = telebot.TeleBot(BOT_TOKEN, threaded=False)
 orchestrator = AgentOrchestrator()
 
 def sanitize_telegram_html(text: str) -> str:
-    """
-    Strips out unsupported structural HTML layout tags (like html, body, ul, ol)
-    and converts <li> items into safe text bullet points.
-    """
     text = re.sub(r"```html|```", "", text)
     text = text.replace("<html>", "").replace("</html>", "")
     text = text.replace("<body>", "").replace("</body>", "")
@@ -76,44 +70,45 @@ def register_user(message):
         return
 
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     
     try:
         if role == 'student':
             if len(parts) < 5:
-                bot.reply_to(message, "⚠️ Students must provide their teacher's username at the end!\nExample: <code>/register student rahul_s stud123 prof_vijay</code>", parse_mode="HTML")
+                bot.reply_to(message, "⚠️ Students must provide their teacher's username at the end!", parse_mode="HTML")
+                cursor.close()
                 conn.close()
                 return
             teacher_username = parts[4].strip().lower()
-            teacher = cursor.execute("SELECT id FROM users WHERE role='teacher' AND username = ?", (teacher_username,)).fetchone()
+            cursor.execute("SELECT id FROM users WHERE role='teacher' AND username = %s", (teacher_username,))
+            teacher = cursor.fetchone()
             
             if not teacher:
                 bot.reply_to(message, f"❌ Registration failed: Could not find teacher '{teacher_username}'.", parse_mode="HTML")
+                cursor.close()
                 conn.close()
                 return
                 
             cursor.execute(
-                "INSERT INTO users (telegram_chat_id, username, password, role, associated_teacher_id) VALUES (?, ?, ?, ?, ?)", 
+                "INSERT INTO users (telegram_chat_id, username, password, role, associated_teacher_id) VALUES (%s, %s, %s, %s, %s)", 
                 (chat_id, username, password, role, teacher['id'])
             )
             bot.reply_to(message, f"✅ <b>Student Registered!</b>\nLinked to Teacher: <code>{teacher_username}</code>", parse_mode="HTML")
         
         elif role == 'teacher':
             cursor.execute(
-                "INSERT INTO users (telegram_chat_id, username, password, role) VALUES (?, ?, ?, ?)", 
+                "INSERT INTO users (telegram_chat_id, username, password, role) VALUES (%s, %s, %s, %s)", 
                 (chat_id, username, password, role)
             )
             bot.reply_to(message, f"✅ <b>Teacher Registered!</b>\nUsername: <code>{username}</code>", parse_mode="HTML")
             
         conn.commit()
-    except sqlite3.IntegrityError:
-        bot.reply_to(message, f"⚠️ The username <code>{username}</code> is already taken.", parse_mode="HTML")
     except Exception as e:
-        bot.reply_to(message, "⚠️ Registration roadblock encountered.")
+        bot.reply_to(message, f"⚠️ Registration roadmap barrier: username taken or collision.")
         print(f"❌ DB Registration Error: {e}")
     finally:
+        cursor.close()
         conn.close()
-
 
 @bot.message_handler(commands=['login'])
 def login_as_user(message):
@@ -121,29 +116,28 @@ def login_as_user(message):
     parts = message.text.split()
     
     if len(parts) < 2:
-        bot.reply_to(message, "⚠️ <b>Login Format:</b> <code>/login [username]</code>\n<i>(e.g., /login rahul)</i>", parse_mode="HTML")
+        bot.reply_to(message, "⚠️ <b>Login Format:</b> <code>/login [username]</code>", parse_mode="HTML")
         return
         
     target_username = parts[1].strip().lower()
     
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     
-    # 1. Look up if the target username exists in your database
-    account = cursor.execute("SELECT * FROM users WHERE username = ?", (target_username,)).fetchone()
+    cursor.execute("SELECT * FROM users WHERE username = %s", (target_username,))
+    account = cursor.fetchone()
     
     if not account:
-        bot.reply_to(message, f"❌ <b>Login Failed:</b> The username <code>{target_username}</code> does not exist in the database layout.", parse_mode="HTML")
+        bot.reply_to(message, f"❌ <b>Login Failed:</b> The username <code>{target_username}</code> does not exist.", parse_mode="HTML")
+        cursor.close()
         conn.close()
         return
         
-    # 2. Update the chosen username row to take over your current active Telegram Chat ID
-    cursor.execute("UPDATE users SET telegram_chat_id = ? WHERE username = ?", (chat_id, target_username))
-    
-    # 3. Clean up other rows using your old chat ID so notifications route correctly
-    cursor.execute("UPDATE users SET telegram_chat_id = NULL WHERE username != ? AND telegram_chat_id = ?", (target_username, chat_id))
+    cursor.execute("UPDATE users SET telegram_chat_id = %s WHERE username = %s", (chat_id, target_username))
+    cursor.execute("UPDATE users SET telegram_chat_id = NULL WHERE username != %s AND telegram_chat_id = %s", (target_username, chat_id))
     
     conn.commit()
+    cursor.close()
     conn.close()
     
     role_emoji = "🏫" if account['role'] == 'teacher' else "🎒"
@@ -152,21 +146,21 @@ def login_as_user(message):
         f"🔓 <b>Session Login Successful!</b>\n"
         f"👤 Identity: <code>{target_username}</code>\n"
         f"{role_emoji} Active Role: <code>{account['role'].upper()}</code>\n\n"
-        f"<i>All incoming agent traffic and dashboard states are now routed to this profile context.</i>",
+        f"<i>All incoming traffic states are now routed to this profile context.</i>",
         parse_mode="HTML"
     )
-    print(f"🔑 Session Takeover: Chat ID {chat_id} logged into account '{target_username}' as {account['role'].upper()}.")
-
 
 @bot.message_handler(commands=['summary'])
 def send_progress_summary(message):
     chat_id = message.chat.id
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     
-    user = cursor.execute("SELECT * FROM users WHERE telegram_chat_id = ?", (chat_id,)).fetchone()
+    cursor.execute("SELECT * FROM users WHERE telegram_chat_id = %s", (chat_id,))
+    user = cursor.fetchone()
     if not user or user['role'] != 'teacher':
-        bot.reply_to(message, "❌ Access Denied. Only registered teachers can request classroom summaries.")
+        bot.reply_to(message, "❌ Access Denied. Only registered teachers can request summaries.")
+        cursor.close()
         conn.close()
         return
 
@@ -182,25 +176,26 @@ def send_progress_summary(message):
 
     if target_student:
         bot.reply_to(message, f"📊 <b>[Summariser Agent]</b> Pulling logs for <code>{target_student}</code>...", parse_mode="HTML")
-        active_rows = conn.execute('''
+        cursor.execute('''
             SELECT u.username as student_name, a.task_description, a.deadline, a.status
             FROM assignments a
             JOIN users u ON a.student_id = u.id
-            WHERE u.username LIKE ? AND a.teacher_id = ?
-        ''', (f"%{target_student}%", user['id'])).fetchall()
-        
+            WHERE u.username LIKE %s AND a.teacher_id = %s
+        ''', (f"%{target_student}%", user['id']))
+        active_rows = cursor.fetchall()
         report = orchestrator.summarizer_agent_single(target_student, message.text, active_rows)
     else:
         bot.reply_to(message, "📊 <b>[Summariser Agent]</b> Compiling your classroom summary...", parse_mode="HTML")
-        active_rows = conn.execute('''
+        cursor.execute('''
             SELECT u.username as student_name, a.task_description, a.deadline, a.status
             FROM assignments a
             JOIN users u ON a.student_id = u.id
-            WHERE a.teacher_id = ?
-        ''', (user['id'],)).fetchall()
-        
+            WHERE a.teacher_id = %s
+        ''', (user['id'],))
+        active_rows = cursor.fetchall()
         report = orchestrator.summarizer_agent_global(active_rows)
         
+    cursor.close()
     conn.close()
     report = sanitize_telegram_html(report)
     bot.send_message(chat_id, report, parse_mode="HTML")
@@ -209,17 +204,21 @@ def send_progress_summary(message):
 def handle_homework_file(message):
     chat_id = message.chat.id
     conn = get_db_connection()
-    cursor = conn.cursor()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
     
-    user = cursor.execute("SELECT * FROM users WHERE telegram_chat_id = ?", (chat_id,)).fetchone()
+    cursor.execute("SELECT * FROM users WHERE telegram_chat_id = %s", (chat_id,))
+    user = cursor.fetchone()
     if not user or user['role'] != 'student':
         bot.reply_to(message, "❌ Only registered students can turn in file assignments.")
+        cursor.close()
         conn.close()
         return
         
-    active_task = cursor.execute("SELECT * FROM assignments WHERE student_id = ? AND status != 'Completed' ORDER BY id DESC LIMIT 1", (user['id'],)).fetchone()
+    cursor.execute("SELECT * FROM assignments WHERE student_id = %s AND status != 'Completed' ORDER BY id DESC LIMIT 1", (user['id'],))
+    active_task = cursor.fetchone()
     if not active_task:
         bot.reply_to(message, "⚠️ You have no active pending tasks to submit files for.")
+        cursor.close()
         conn.close()
         return
 
@@ -237,27 +236,23 @@ def handle_homework_file(message):
         file_download_url = f"https://api.telegram.org/file/bot{BOT_TOKEN}/{file_info.file_path}"
         
         file_response = requests.get(file_download_url)
-        if file_response.status_code == 200:
-            downloaded_file = file_response.content
-        else:
-            raise Exception(f"Telegram server returned status {file_response.status_code}")
-        
         local_path = os.path.join(DOWNLOAD_DIR, file_name)
         with open(local_path, 'wb') as new_file:
-            new_file.write(downloaded_file)
+            new_file.write(file_response.content)
 
         cursor.execute("""
             INSERT INTO submissions (assignment_id, submission_text, file_path) 
-            VALUES (?, ?, ?)
-            ON CONFLICT(assignment_id) DO UPDATE SET file_path=excluded.file_path, submission_text=excluded.submission_text
+            VALUES (%s, %s, %s)
+            ON CONFLICT(assignment_id) DO UPDATE SET file_path=EXCLUDED.file_path, submission_text=EXCLUDED.submission_text
         """, (active_task['id'], f"File attachment turned in: {file_name}", local_path))
         
-        cursor.execute("UPDATE assignments SET status = 'Completed' WHERE id = ?", (active_task['id'],))
+        cursor.execute("UPDATE assignments SET status = 'Completed' WHERE id = %s", (active_task['id'],))
         conn.commit()
         
-        bot.reply_to(message, f"🎉 <b>File successfully turned in!</b>\nSaved as <code>{file_name}</code>.", parse_mode="HTML")
+        bot.reply_to(message, f"🎉 <b>File successfully turned in!</b>", parse_mode="HTML")
 
-        teacher = cursor.execute("SELECT * FROM users WHERE id = ?", (active_task['teacher_id'],)).fetchone()
+        cursor.execute("SELECT * FROM users WHERE id = %s", (active_task['teacher_id'],))
+        teacher = cursor.fetchone()
         if teacher and teacher['telegram_chat_id']:
             try:
                 prompt_msg = (
@@ -274,22 +269,24 @@ def handle_homework_file(message):
         bot.reply_to(message, "❌ System failed to download file attachment.")
         print(f"File handling Error: {e}")
     finally:
+        cursor.close()
         conn.close()
 
 @bot.message_handler(func=lambda message: True)
 def handle_conversation(message):
     chat_id = message.chat.id
     conn = get_db_connection()
-    cursor = conn.cursor()
-    user = cursor.execute("SELECT * FROM users WHERE telegram_chat_id = ?", (chat_id,)).fetchone()
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    cursor.execute("SELECT * FROM users WHERE telegram_chat_id = %s", (chat_id,))
+    user = cursor.fetchone()
     
     if not user:
         bot.reply_to(message, "❌ Please register first by sending `/register [role] [username] [password]`.")
+        cursor.close()
         conn.close()
         return
 
     intent = orchestrator.route_intent(message.text, user['role'])
-    print(f"🤖 [Intent Router] Classified text as: '{intent}' for role '{user['role']}'")
 
     if user['role'] == 'teacher':
         if message.reply_to_message and "New Submission Received!" in message.reply_to_message.text:
@@ -297,13 +294,15 @@ def handle_conversation(message):
                 match = re.search(r"Student:\s+([a-zA-Z0-9_]+)", message.reply_to_message.text)
                 if match:
                     student_username = match.group(1).strip()
-                    student = cursor.execute("SELECT * FROM users WHERE role='student' AND username = ?", (student_username,)).fetchone()
+                    cursor.execute("SELECT * FROM users WHERE role='student' AND username = %s", (student_username,))
+                    student = cursor.fetchone()
                     
                     if student:
                         feedback_text = message.text
                         student_alert = f"📝 <b>New Feedback from Teacher {user['username']}:</b>\n\n💬 <i>\"{feedback_text}\"</i>"
                         bot.send_message(student['telegram_chat_id'], student_alert, parse_mode="HTML")
                         bot.reply_to(message, f"✅ Feedback successfully delivered to student <code>{student_username}</code>!", parse_mode="HTML")
+                        cursor.close()
                         conn.close()
                         return
             except Exception as feedback_err:
@@ -318,22 +317,19 @@ def handle_conversation(message):
             deadline = extracted.get('deadline')
             
             if student_username and student_username.lower() != 'null':
-                # --- CORRECTED: Relaxed Global Database Student Lookup Pipeline ---
-                student = cursor.execute("""
+                cursor.execute("""
                     SELECT * FROM users 
-                    WHERE role='student' AND username LIKE ?
-                """, (f"%{student_username.lower().strip()}%",)).fetchone()
+                    WHERE role='student' AND username LIKE %s
+                """, (f"%{student_username.lower().strip()}%",))
+                student = cursor.fetchone()
                 
                 if student:
-                    # Dynamically adjust student profile mapping to link to your live active teacher row context
                     cursor.execute("""
-                        UPDATE users SET associated_teacher_id = ? WHERE id = ?
+                        UPDATE users SET associated_teacher_id = %s WHERE id = %s
                     """, (user['id'], student['id']))
-                    
-                    # Log the fresh homework row safely inside assignments database schema
                     cursor.execute("""
                         INSERT INTO assignments (teacher_id, student_id, task_description, deadline) 
-                        VALUES (?, ?, ?, ?)
+                        VALUES (%s, %s, %s, %s)
                     """, (user['id'], student['id'], task_desc, deadline))
                     
                     conn.commit()
@@ -343,13 +339,12 @@ def handle_conversation(message):
                     except Exception as DM_err:
                         print(f"Couldn't DM student directly: {DM_err}")
                 else:
-                    bot.reply_to(message, f"🔍 AI extracted student username '{student_username}', but they aren't registered yet in the database.")
+                    bot.reply_to(message, f"🔍 Student username '{student_username}' not found.")
             else:
-                bot.reply_to(message, "💡 Couldn't spot a student username identifier. Try format: 'Assign rahul_s a reading task by tomorrow'")
+                bot.reply_to(message, "💡 Couldn't spot a student username identifier.")
 
         elif intent == "QUERY":
-            bot.reply_to(message, "📊 <b>[Summariser Agent]</b> Query caught. Processing performance records...")
-            
+            bot.reply_to(message, "📊 <b>[Summariser Agent]</b> Processing performance records...")
             target_student = None
             for word in message.text.split():
                 clean_word = word.strip().lower().replace("?", "")
@@ -358,25 +353,28 @@ def handle_conversation(message):
                     break
                     
             if target_student:
-                active_rows = conn.execute('''
+                cursor.execute('''
                     SELECT u.username as student_name, a.task_description, a.deadline, a.status
                     FROM assignments a
                     JOIN users u ON a.student_id = u.id
-                    WHERE u.username LIKE ? AND a.teacher_id = ?
-                ''', (f"%{target_student}%", user['id'])).fetchall()
+                    WHERE u.username LIKE %s AND a.teacher_id = %s
+                ''', (f"%{target_student}%", user['id']))
+                active_rows = cursor.fetchall()
                 
                 report = orchestrator.summarizer_agent_single(target_student, message.text, active_rows)
                 report = sanitize_telegram_html(report)
                 bot.send_message(chat_id, report, parse_mode="HTML")
             else:
-                bot.reply_to(message, "🔍 I recognized an analytics tracking request, but couldn't isolate the username. Please name the student explicitly.")
+                bot.reply_to(message, "🔍 Could not isolate the student's username.")
         else:
-            bot.reply_to(message, "👋 Welcome! You can assign work naturally (e.g., 'Assign rahul_s reading by Friday') or ask questions like 'How is rahul_s doing this week?'")
+            bot.reply_to(message, "👋 Welcome! You can assign work naturally or request analytics tracking.")
 
     elif user['role'] == 'student':
-        active_task = cursor.execute("SELECT * FROM assignments WHERE student_id = ? AND status != 'Completed' ORDER BY id DESC LIMIT 1", (user['id'],)).fetchone()
+        cursor.execute("SELECT * FROM assignments WHERE student_id = %s AND status != 'Completed' ORDER BY id DESC LIMIT 1", (user['id'],))
+        active_task = cursor.fetchone()
         if not active_task:
             bot.reply_to(message, "🌟 You don't have any pending assignments right now.")
+            cursor.close()
             conn.close()
             return
             
@@ -386,10 +384,11 @@ def handle_conversation(message):
         if new_status == 'Completed':
             bot.reply_to(message, "🎉 <b>Awesome job!</b> Please upload/attach your submission document or photo here to officially complete this task!", parse_mode="HTML")
         else:
-            cursor.execute("UPDATE assignments SET status = ? WHERE id = ?", (new_status, active_task['id']))
+            cursor.execute("UPDATE assignments SET status = %s WHERE id = %s", (new_status, active_task['id']))
             bot.reply_to(message, f"👍 <b>Status Updated to:</b> <code>{new_status}</code>", parse_mode="HTML")
             conn.commit()
             
+    cursor.close()
     conn.close()
 
 if __name__ == '__main__':
