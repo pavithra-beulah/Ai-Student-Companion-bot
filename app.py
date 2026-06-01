@@ -3,7 +3,7 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from flask import Flask, render_template, request, redirect, session, url_for
-from database import get_db_connection
+from database import get_db_connection, init_db  # Imported init_db for database reset
 from dotenv import load_dotenv
 import threading
 import time
@@ -151,8 +151,6 @@ def submit_feedback():
 
     return redirect(url_for('teacher_dashboard'))
 
-# ... (your existing routes like index, login_page, etc.)
-
 def run_bot():
     print("🤖 Telegram bot started...")
     try:
@@ -169,6 +167,14 @@ def run_reminders():
         except Exception as e:
             print(f"Reminder error: {e}")
         time.sleep(30)
+
+# FIX FOR FREE INSTANCE: Wipe and re-initialize the database on deployment
+print("♻️ Re-initializing database tables...")
+try:
+    init_db()
+    print("✅ Postgres Database cleanly initialized on Render.")
+except Exception as db_err:
+    print(f"❌ Database initialization failed: {db_err}")
 
 # FIX FOR GUNICORN: Spawning background threads during module loading context
 print("Initializing background workers for production...")
