@@ -3,7 +3,7 @@ import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from flask import Flask, render_template, request, redirect, session, url_for
-from database import get_db_connection, init_db  # Imported init_db for database reset
+from database import get_db_connection, init_db  
 from dotenv import load_dotenv
 import threading
 import time
@@ -154,7 +154,6 @@ def submit_feedback():
 def run_bot():
     print("🤖 Telegram bot started...")
     try:
-        # Use regular polling with non-stop handling for thread safety
         telegram_bot.bot.polling(none_stop=True, interval=0, timeout=20)
     except Exception as e:
         print(f"Bot polling crashed: {e}")
@@ -168,21 +167,33 @@ def run_reminders():
             print(f"Reminder error: {e}")
         time.sleep(30)
 
-# FIX FOR FREE INSTANCE: Wipe and re-initialize the database on deployment
-print("♻️ Re-initializing database tables...")
-try:
-    init_db()
-    print("✅ Postgres Database cleanly initialized on Render.")
-except Exception as db_err:
-    print(f"❌ Database initialization failed: {db_err}")
+# Global flag to ensure workers are initialized only once across requests
+workers_initialized = False
 
-# FIX FOR GUNICORN: Spawning background threads during module loading context
-print("Initializing background workers for production...")
-threading.Thread(target=run_bot, daemon=True).start()
-threading.Thread(target=run_reminders, daemon=True).start()
+@app.before_request
+def initialize_background_workers():
+    global workers_initialized
+    if not workers_initialized:
+        # Avoid running initialization inside auxiliary testing sub-processes
+        if os.environ.get('WERKZEUG_RUN_MAIN') != 'true':
+            
+            # 1. Clear and configure database tables fresh on Render boot
+            print("♻️ Re-initializing database tables...")
+            try:
+                init_db()
+                print("✅ Postgres Database cleanly initialized on Render.")
+            except Exception as db_err:
+                print(f"❌ Database initialization failed: {db_err}")
+
+            # 2. Safely thread background services out of Gunicorn's request lifecycle
+            print("Initializing background workers for production...")
+            threading.Thread(target=run_bot, daemon=True).start()
+            threading.Thread(target=run_reminders, daemon=True).start()
+            
+            workers_initialized = True
 
 if __name__ == "__main__":
-    # This block only runs during local development testing via 'python app.py'
+    # Local fallback option when executing 'python app.py' manually
     bind_port = int(os.getenv("PORT", 5000))
     print(f"🚀 Flask app running locally on port {bind_port}...")
     app.run(host="0.0.0.0", port=bind_port)
