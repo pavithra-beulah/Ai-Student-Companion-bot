@@ -153,7 +153,11 @@ def submit_feedback():
 
 def run_bot():
     print("🤖 Telegram bot started...")
-    telegram_bot.bot.infinity_polling()
+    # Change infinity_polling() to regular polling with non_stop handling
+    try:
+        telegram_bot.bot.polling(none_stop=True, interval=0, timeout=20)
+    except Exception as e:
+        print(f"Bot polling crashed: {e}")
 
 def run_reminders():
     print("⏰ Reminder system started...")
@@ -165,10 +169,16 @@ def run_reminders():
         time.sleep(30)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot, daemon=True).start()
-    threading.Thread(target=run_reminders, daemon=True).start()
-
-    # CRITICAL RENDER FIX: Dynamically intercept system web container port binding variable
+    # 1. Intercept the port right away
     bind_port = int(os.getenv("PORT", 5000))
-    print(f"🚀 Flask app running on port {bind_port}...")
+    print(f"🚀 Flask app preparing on port {bind_port}...")
+    
+    # 2. Start your threads with a slight structural breathing room
+    bot_thread = threading.Thread(target=run_bot, daemon=True)
+    reminder_thread = threading.Thread(target=run_reminders, daemon=True)
+    
+    bot_thread.start()
+    reminder_thread.start()
+
+    # 3. Hand over control to Flask
     app.run(host="0.0.0.0", port=bind_port)
